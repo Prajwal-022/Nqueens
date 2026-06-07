@@ -43,7 +43,7 @@ function renderHomePage() {
           <div class="subtitle">Algorithm Visualizer</div>
           <h1>Explore the <span class="highlight">N-Queens</span> Problem</h1>
           <p class="description">
-            The N-Queens puzzle is the challenge of placing N chess queens on an N×N chessboard
+            The N-Queens puzzle is the challenge of placing N  queens on an N×N chessboard
             so that no two queens threaten each other. This means no two queens share the same
             row, column, or diagonal. Watch the backtracking algorithm solve it step by step.
           </p>
