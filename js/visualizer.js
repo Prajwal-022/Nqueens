@@ -4,7 +4,7 @@
 
 // ---- State ----
 let vizState = {
-  boardSize: 8,
+  boardSize: 4,
   speed: 50,        // delay in ms
   isRunning: false,
   isStopped: false,
@@ -13,6 +13,8 @@ let vizState = {
   board: [],
   solvePromise: null,
   nodesExplored: 0,
+  manualMode: false,
+  deadEndWait: false,
 };
 
 // ---- Speed mapping: slider value (1-100) → delay (ms) ----
@@ -33,11 +35,48 @@ function initBoard(n) {
   return Array.from({ length: n }, () => Array(n).fill(0));
 }
 
+// ---- Toast notifications ----
+function showToast(message, type = 'danger') {
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span>${type === 'danger' ? '❌' : '⚠️'}</span> ${message}`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.animation = 'toastFadeOut 0.3s ease forwards';
+    setTimeout(() => {
+      if (container.contains(toast)) container.removeChild(toast);
+    }, 300);
+  }, 3000);
+}
+
+// ---- Center Popup ----
+function showCenterPopup(title, text, type = 'danger') {
+  let popup = document.createElement('div');
+  popup.className = `center-popup popup-${type}`;
+  popup.innerHTML = `<h2>${title}</h2><p>${text}</p>`;
+  document.body.appendChild(popup);
+  
+  setTimeout(() => {
+    if (document.body.contains(popup)) {
+      document.body.removeChild(popup);
+    }
+  }, 3500);
+}
+
 // ---- Render the Visualizer Page ----
 function renderVisualizerPage() {
   // Size buttons
   let sizeButtonsHTML = '';
-  for (let i = 4; i <= 12; i++) {
+  for (let i = 1; i <= 12; i++) {
     sizeButtonsHTML += `<button class="size-btn ${i === vizState.boardSize ? 'active' : ''}" 
       data-size="${i}" id="size-btn-${i}">${i}</button>`;
   }
@@ -65,11 +104,27 @@ function renderVisualizerPage() {
         </div>
 
         <div class="panel-section">
+          <div class="section-label">Mode</div>
+          <div class="action-buttons mb-sm">
+            <button class="btn btn-start active-mode" id="btnModeAuto" style="border: 2px solid var(--clr-accent);">Auto</button>
+            <button class="btn btn-reset" id="btnModeManual" style="background: var(--bg-primary); color: var(--clr-text-muted);">Manual</button>
+          </div>
+        </div>
+
+        <div class="panel-section" id="autoControls">
           <div class="section-label">Controls</div>
           <div class="action-buttons">
             <button class="btn btn-start" id="btnStart">▶ Start</button>
             <button class="btn btn-stop" id="btnStop" disabled>■ Stop</button>
             <button class="btn btn-reset" id="btnReset">↺ Reset</button>
+          </div>
+        </div>
+        
+        <div class="panel-section" id="manualControls" style="display: none;">
+          <div class="section-label">Manual Controls</div>
+          <div style="font-size: 0.85rem; color: var(--clr-text-muted); margin-bottom: 10px;">Click on the board to place or remove queens. Invalid placements will flash red.</div>
+          <div class="action-buttons">
+            <button class="btn btn-reset" id="btnManualClear">Clear Board</button>
           </div>
         </div>
 
@@ -137,6 +192,137 @@ function buildChessboard() {
     }
   }
   board.innerHTML = html;
+
+  // Add click listeners for manual mode
+  if (!vizState.board || vizState.board.length !== n) {
+    vizState.board = initBoard(n);
+  }
+  
+  board.querySelectorAll('.cell').forEach(cell => {
+    cell.addEventListener('click', () => {
+      if (!vizState.manualMode || vizState.isRunning || vizState.deadEndWait) return;
+      
+      const r = parseInt(cell.dataset.row);
+      const c = parseInt(cell.dataset.col);
+      
+      if (vizState.board[r][c] === 1) {
+        // Remove queen
+        vizState.board[r][c] = 0;
+        removeQueenVisual(r, c);
+        removeAttackPaths(r);
+        clearHighlights();
+      } else {
+        // Try to place queen
+        if (isSafeManual(vizState.board, r, c, n)) {
+          vizState.board[r][c] = 1;
+          placeQueenVisual(r, c);
+          showAttackPaths(r, c, n);
+          
+          if (!checkManualWin()) {
+            const blockedRow = checkDeadEnd(vizState.board, n);
+            if (blockedRow !== -1) {
+              vizState.deadEndWait = true;
+              showCenterPopup('Dead End Reached!', 'Clearing the board...', 'danger');
+              // Highlight the blocked row
+              for (let i = 0; i < n; i++) {
+                highlightCell(blockedRow, i, 'danger');
+              }
+              // Clear board after 2.5 seconds
+              setTimeout(() => {
+                vizState.deadEndWait = false;
+                if (vizState.manualMode) resetVisualizer(true);
+              }, 2500);
+            }
+          }
+        } else {
+          // Invalid placement (immediate conflict)
+          highlightCell(r, c, 'danger');
+          showToast('Queen cannot be placed here (conflict)', 'danger');
+          setTimeout(() => highlightCell(r, c, null), 300);
+        }
+      }
+    });
+  });
+}
+
+function checkManualWin() {
+  const n = vizState.boardSize;
+  let queens = 0;
+  const currentSolution = new Array(n).fill(-1);
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (vizState.board[r][c] === 1) {
+        queens++;
+        currentSolution[r] = c;
+      }
+    }
+  }
+
+  if (queens === n) {
+    vizState.deadEndWait = true;
+    // Pulse animation on the board
+    const boardEl = document.getElementById('chessboard');
+    if (boardEl) {
+      boardEl.classList.add('board-solved');
+      setTimeout(() => boardEl.classList.remove('board-solved'), 1500);
+    }
+
+    // Flash all queens to show win
+    for (let r = 0; r < n; r++) {
+      highlightCell(r, currentSolution[r], 'highlight');
+    }
+
+    // Check if this solution is already found
+    const solString = currentSolution.join(',');
+    const isNew = !vizState.solutions.some(s => s.join(',') === solString);
+
+    if (isNew) {
+      vizState.solutions.push([...currentSolution]);
+      addMiniBoard([...currentSolution], vizState.solutions.length - 1);
+      vizState.currentSolution = vizState.solutions.length - 1;
+      updateSolCounter();
+      updateStats();
+      updateNavButtons();
+      highlightSelectedMiniBoard();
+    }
+
+    setTimeout(() => {
+      clearHighlights();
+      
+      const maxSols = MAX_SOLUTIONS[n];
+      const isMaxReached = vizState.solutions.length === maxSols;
+      
+      if (isMaxReached && isNew) {
+        // They just found the LAST possible solution!
+        showCenterPopup('🏆 Mastermind!', `Incredible! You've found all ${maxSols} solutions for a ${n}x${n} board. Time to challenge yourself with a different size!`, 'success');
+        
+        setTimeout(() => {
+          vizState.deadEndWait = false;
+          if (vizState.manualMode) resetVisualizer(false); // full reset
+        }, 5000);
+      } else {
+        const title = isNew ? '🎉 Brilliant!' : '👍 Great Job!';
+        let msg = isNew 
+          ? `You found a valid solution! You have discovered ${vizState.solutions.length} out of ${maxSols}. Keep going!`
+          : 'You found this solution again! Try to discover a completely new pattern.';
+        
+        if (!isNew && isMaxReached) {
+          msg = `You already found all ${maxSols} solutions! Try changing the board size.`;
+        }
+
+        showCenterPopup(title, msg, 'success');
+        
+        setTimeout(() => {
+          vizState.deadEndWait = false;
+          if (vizState.manualMode) resetVisualizer(true); // keep solutions
+        }, 3500);
+      }
+    }, 600);
+
+    return true;
+  }
+  return false;
 }
 
 // Calculate cell size based on board size and viewport
@@ -151,11 +337,59 @@ function calculateCellSize(n) {
   return Math.floor(available / n);
 }
 
+const QUEEN_COLORS = [
+  '#f03968', '#39719c', '#ffb233', '#57f47d', '#9b59b6', '#1abc9c', 
+  '#f1c40f', '#e67e22', '#34495e', '#e84393', '#00cec9', '#6c5ce7'
+];
+
+const MAX_SOLUTIONS = {
+  1: 1, 2: 0, 3: 0, 4: 2, 5: 10, 6: 4, 7: 40, 
+  8: 92, 9: 352, 10: 724, 11: 2680, 12: 14200
+};
+
+// ---- Show attack paths (row, column, diagonals) ----
+function showAttackPaths(row, col, n) {
+  const color = QUEEN_COLORS[row % QUEEN_COLORS.length];
+  const delayFactor = 20; 
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (r === row && c === col) continue; 
+
+      let lineClass = null;
+
+      if (r === row) lineClass = 'attack-line-h';
+      else if (c === col) lineClass = 'attack-line-v';
+      else if (r - c === row - col) lineClass = 'attack-line-d1';
+      else if (r + c === row + col) lineClass = 'attack-line-d2';
+
+      if (lineClass) {
+        const cell = document.getElementById(`cell-${r}-${c}`);
+        if (!cell) continue;
+
+        const distance = Math.max(Math.abs(r - row), Math.abs(c - col));
+        
+        const lineIndicator = document.createElement('div');
+        lineIndicator.className = `attack-line ${lineClass}`;
+        lineIndicator.style.backgroundColor = color;
+        lineIndicator.style.animationDelay = `${distance * delayFactor}ms`;
+        lineIndicator.dataset.queenRow = row;
+        
+        cell.appendChild(lineIndicator);
+      }
+    }
+  }
+}
+
+function removeAttackPaths(row) {
+  document.querySelectorAll(`.attack-line[data-queen-row="${row}"]`).forEach(el => el.remove());
+}
+
 // ---- Place / remove queen on the visual board ----
 function placeQueenVisual(row, col) {
   const cell = document.getElementById(`cell-${row}-${col}`);
   if (!cell) return;
-  cell.innerHTML = `<img class="queen-icon placing" src="${QUEEN_DATA_URL}" alt="Q">`;
+  cell.innerHTML = `<img class="queen-icon placing" src="${QUEEN_DATA_URL}" alt="Q" style="position: relative; z-index: 2;">`;
 }
 
 function removeQueenVisual(row, col) {
@@ -199,6 +433,51 @@ function updateSolCounter() {
   const total = vizState.solutions.length;
   const current = vizState.currentSolution >= 0 ? vizState.currentSolution + 1 : 0;
   el.textContent = `${current} / ${total}`;
+}
+
+// ---- Manual mode isSafe check ----
+function isSafeManual(board, row, col, n) {
+  for (let i = 0; i < n; i++) {
+    if (i !== row && board[i][col] === 1) return false;
+    if (i !== col && board[row][i] === 1) return false;
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      if (i === row && j === col) continue;
+      if (board[i][j] === 1 && Math.abs(i - row) === Math.abs(j - col)) return false;
+    }
+  }
+  return true;
+}
+
+// ---- Check for a dead end (a row with no safe spots) ----
+function checkDeadEnd(board, n) {
+  for (let r = 0; r < n; r++) {
+    // Check if this row already has a queen
+    let hasQueen = false;
+    for (let c = 0; c < n; c++) {
+      if (board[r][c] === 1) {
+        hasQueen = true;
+        break;
+      }
+    }
+    
+    // If no queen, check if there are any safe spots
+    if (!hasQueen) {
+      let hasSafeCell = false;
+      for (let c = 0; c < n; c++) {
+        if (isSafeManual(board, r, c, n)) {
+          hasSafeCell = true;
+          break;
+        }
+      }
+      // If no safe spots, it's a dead end
+      if (!hasSafeCell) {
+        return r;
+      }
+    }
+  }
+  return -1;
 }
 
 // ---- isSafe check ----
@@ -357,6 +636,59 @@ function updateNavButtons() {
 
 // ---- Initialize event listeners ----
 function initVisualizerEvents() {
+  // Mode buttons
+  const btnModeAuto = document.getElementById('btnModeAuto');
+  const btnModeManual = document.getElementById('btnModeManual');
+  const autoControls = document.getElementById('autoControls');
+  const manualControls = document.getElementById('manualControls');
+
+  if (btnModeAuto && btnModeManual) {
+    btnModeAuto.addEventListener('click', () => {
+      if (vizState.isRunning) return;
+      vizState.manualMode = false;
+      
+      btnModeAuto.style.background = 'var(--clr-accent)';
+      btnModeAuto.style.color = '#005013';
+      btnModeAuto.style.border = '2px solid var(--clr-accent)';
+      
+      btnModeManual.style.background = 'var(--bg-primary)';
+      btnModeManual.style.color = 'var(--clr-text-muted)';
+      btnModeManual.style.border = 'none';
+      
+      autoControls.style.display = 'block';
+      manualControls.style.display = 'none';
+      
+      document.getElementById('speedSlider').disabled = false;
+      resetVisualizer();
+    });
+
+    btnModeManual.addEventListener('click', () => {
+      if (vizState.isRunning) return;
+      vizState.manualMode = true;
+      
+      btnModeManual.style.background = 'var(--clr-warning)';
+      btnModeManual.style.color = '#653f00';
+      btnModeManual.style.border = '2px solid var(--clr-warning)';
+      
+      btnModeAuto.style.background = 'var(--bg-primary)';
+      btnModeAuto.style.color = 'var(--clr-text-muted)';
+      btnModeAuto.style.border = 'none';
+      
+      autoControls.style.display = 'none';
+      manualControls.style.display = 'block';
+      
+      document.getElementById('speedSlider').disabled = true;
+      resetVisualizer();
+    });
+  }
+
+  const btnManualClear = document.getElementById('btnManualClear');
+  if (btnManualClear) {
+    btnManualClear.addEventListener('click', () => {
+      resetVisualizer(true);
+    });
+  }
+
   // Size buttons
   const sizeButtons = document.getElementById('sizeButtons');
   if (sizeButtons) {
@@ -501,12 +833,17 @@ function stopSolving() {
 }
 
 // ---- Reset ----
-function resetVisualizer() {
-  vizState.solutions = [];
-  vizState.currentSolution = -1;
-  vizState.nodesExplored = 0;
+function resetVisualizer(keepSolutions = false) {
+  if (!keepSolutions) {
+    vizState.solutions = [];
+    vizState.currentSolution = -1;
+    vizState.nodesExplored = 0;
+  }
+  
   vizState.isRunning = false;
   vizState.isStopped = false;
+  vizState.deadEndWait = false;
+  vizState.board = initBoard(vizState.boardSize);
 
   updateStats();
   updateSolCounter();
@@ -514,14 +851,16 @@ function resetVisualizer() {
   buildChessboard();
 
   // Reset gallery
-  const gallery = document.getElementById('solutionsGallery');
-  if (gallery) {
-    gallery.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">♛</div>
-        <div>No solutions yet</div>
-        <div style="font-size: 0.8rem;">Click Start to begin solving</div>
-      </div>`;
+  if (!keepSolutions) {
+    const gallery = document.getElementById('solutionsGallery');
+    if (gallery) {
+      gallery.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">♛</div>
+          <div>No solutions yet</div>
+          <div style="font-size: 0.8rem;">Click Start to begin solving</div>
+        </div>`;
+    }
   }
 }
 
@@ -530,10 +869,14 @@ function toggleButtons(running) {
   const btnStart = document.getElementById('btnStart');
   const btnStop = document.getElementById('btnStop');
   const btnReset = document.getElementById('btnReset');
+  const btnModeAuto = document.getElementById('btnModeAuto');
+  const btnModeManual = document.getElementById('btnModeManual');
   const sizeButtons = document.querySelectorAll('.size-btn');
 
   if (btnStart) btnStart.disabled = running;
   if (btnStop) btnStop.disabled = !running;
   if (btnReset) btnReset.disabled = running;
+  if (btnModeAuto) btnModeAuto.disabled = running;
+  if (btnModeManual) btnModeManual.disabled = running;
   sizeButtons.forEach(b => b.disabled = running);
 }
